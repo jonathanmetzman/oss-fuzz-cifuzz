@@ -746,7 +746,15 @@ def cifuzz(args):
 
   if ci_build(args, primary_container):
     return 1
-  return 1 if smoketest(args, primary_container) else 0
+  if smoketest(args, primary_container):
+    if not primary_container:
+      return 1
+    artifacts_dir = os.path.join(OSSFUZZ_DIR, 'artifacts')
+    if os.path.isdir(artifacts_dir):
+      shutil.rmtree(artifacts_dir)
+    shutil.copytree(os.path.join(_get_output_dir(args.project_name), 'cifuzz-crashes'), artifacts_dir)
+    return 1
+  return 0
 
 def smoketest(args, primary_container):
   """smoketests a fuzzer in the runner container."""
@@ -778,16 +786,25 @@ def _get_container_dir(dir_name, project_name, primary_container):
     return os.path.join('/', dir_name)
   return os.path.join(BUILD_DIR, dir_name, project_name)
 
+
 def ci_build(args, primary_container):
   if not _build_image(args.project_name):
     return 1
+  output_dir = _get_output_dir(args.project_name)
+
+  if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
+  work_dir = _get_work_dir(args.project_name)
+  if not os.path.exists(work_dir):
+    os.makedirs(work_dir)
   env = [
       'FUZZING_ENGINE=libfuzzer',
       'SANITIZER=address',
       'ARCHITECTURE=x86_64',
-      'OUT=' + _get_output_dir(args.project_name),
-      'WORK=' + _get_work_dir(args.project_name),
+      'OUT=' + output_dir,
+      'WORK=' + work_dir,
   ]
+
   project_work_dir = _get_work_dir(args.project_name)
   command = (
       ['docker', 'run', '--rm', '--cap-add', 'SYS_PTRACE'] +
