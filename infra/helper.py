@@ -737,51 +737,70 @@ def run_fuzzer(args):
 
 
 def cifuzz(args):
-  if ci_build(args):
-    return 1
-  if smoketest(args):
-    crashes = os.path.join(BUILD_DIR, 'out', args.project_name, 'cifuzz-crashes')
-    workspace_crashes = os.path.join(os.getenv('GITHUB_WORKSPACE'), 'crashes')
-    print('debug')
-    import pdb; pdb.set_trace()
-    if os.path.isdir(workspace_crashes):
-      shutil.rmtree(workspace_crashes)
-    shutil.copytree(crashes, workspace_crashes)
-    return 1
+  with open('/proc/self/cgroup') as file_handle:
+    if 'docker' in file_handle.read():
+      with open('/etc/hostname') as file_handle:
+        primary_container = file_handle.read().strip()
+    else:
+      primary_container = None
 
-def smoketest(args):
+  if ci_build(args, primary_container):
+    return 1
+  return 1 if smoketest(args, primary_container) else 0
+
+def smoketest(args, primary_container):
   """smoketests a fuzzer in the runner container."""
   if not _check_project_exists(args.project_name):
     return 1
 
   env = [
       'FUZZING_ENGINE=libfuzzer',
-      'SANITIZER=address'
+      'SANITIZER=address',
+      'OUT=' + _get_output_dir(args.project_name),
+      'WORK=' + _get_work_dir(args.project_name),
   ]
 
-  run_args = _env_to_docker_args(env) + [
-      '-v', '%s:/out' % _get_output_dir(args.project_name),
+  if primary_container:
+    run_args = ['--volumes-from', primary_container]
+
+  container_out_dir = _get_container_dir(
+      'out', args.project_name, primary_container)
+  run_args += _env_to_docker_args(env) + [
+      # '-v', '%s:%s' % (_get_output_dir(args.project_name), container_out_dir),
       '-t', 'gcr.io/oss-fuzz-base/base-runner:testing',
       'smoketest.py'
   ]
   return docker_run(run_args)
 
-def ci_build(args):
+
+def _get_container_dir(dir_name, project_name, primary_container):
+  if primary_container is None:
+    return os.path.join('/', dir_name)
+  return os.path.join(BUILD_DIR, dir_name, project_name)
+
+def ci_build(args, primary_container):
   if not _build_image(args.project_name):
     return 1
   env = [
       'FUZZING_ENGINE=libfuzzer',
       'SANITIZER=address',
       'ARCHITECTURE=x86_64',
+      'OUT=' + _get_output_dir(args.project_name),
+      'WORK=' + _get_work_dir(args.project_name),
   ]
   project_work_dir = _get_work_dir(args.project_name)
   command = (
       ['docker', 'run', '--rm', '--cap-add', 'SYS_PTRACE'] +
       _env_to_docker_args(env))
+  if primary_container:
+    command += ['--volumes-from', primary_container]
   gh_ref = os.getenv('GITHUB_REF')
+  work_container_dir = _get_container_dir(
+      'work', args.project_name, primary_container)
+  out_container_dir = _get_container_dir('out', args.project_name, primary_container)
   command += [
-      '-v', '%s:/out' % _get_output_dir(args.project_name),
-      '-v', '%s:/work' % _get_work_dir(args.project_name),
+      # '-v', '%s:%s' % (_get_output_dir(args.project_name), out_container_dir),
+      # '-v', '%s:%s' % (_get_work_dir(args.project_name), work_container_dir),
       '-t', 'gcr.io/oss-fuzz/%s' % args.project_name,
       '/bin/bash', '-c',
       ('git fetch --tags --prune --progress --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +{0}:{1} && '
