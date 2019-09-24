@@ -15,11 +15,8 @@
 ################################################################################
 
 FROM gcr.io/oss-fuzz-base/base-builder
-MAINTAINER mmoroz@chromium.org
 RUN apt-get update && apt-get install -y make autoconf automake libtool
 
-# Using a real zlib project, but with broken build script and/or fuzz target.
-
-RUN git clone --depth 1 https://github.com/madler/zlib.git
-WORKDIR zlib
-COPY build.sh bad_example_fuzzer.cc $SRC/
+RUN git clone --depth 1 https://github.com/jonathanmetzman/test-project.git
+WORKDIR test-project
+COPY build.sh $SRC/

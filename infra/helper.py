@@ -25,6 +25,7 @@ import os
 import pipes
 import re
 import subprocess
+import shutil
 import sys
 import tempfile
 import templates
@@ -159,6 +160,10 @@ def main():
   pull_images_parser = subparsers.add_parser('pull_images',
                                              help='Pull base images.')
 
+  cifuzz_parser = subparsers.add_parser(
+      'cifuzz', help='Do quick smoke fuzzing in CI.')
+  cifuzz_parser.add_argument('project_name', help='name of the project')
+
   args = parser.parse_args()
 
   # We have different default values for `sanitizer` depending on the `engine`.
@@ -189,6 +194,8 @@ def main():
     return shell(args)
   elif args.command == 'pull_images':
     return pull_images(args)
+  elif args.command == 'cifuzz':
+    return cifuzz(args)
 
   return 0
 
@@ -342,7 +349,7 @@ def _workdir_from_dockerfile(project_name):
 
 def docker_run(run_args, print_output=True):
   """Call `docker run`."""
-  command = ['docker', 'run', '--rm', '-i', '--privileged']
+  command = ['docker', 'run', '--rm', '--privileged']
   command.extend(run_args)
 
   print('Running:', _get_command_string(command))
@@ -454,7 +461,7 @@ def build_fuzzers(args):
     env.append('MSAN_LIBS_PATH=' + '/work/msan')
 
   command = (
-      ['docker', 'run', '--rm', '-i', '--cap-add', 'SYS_PTRACE'] +
+      ['docker', 'run', '--rm', '--cap-add', 'SYS_PTRACE'] +
       _env_to_docker_args(env))
   if args.source_path:
     workdir = _workdir_from_dockerfile(args.project_name)
@@ -727,6 +734,65 @@ def run_fuzzer(args):
   ] + args.fuzzer_args
 
   return docker_run(run_args)
+
+
+def cifuzz(args):
+  if ci_build(args):
+    return 1
+  if smoketest(args):
+    crashes = os.path.join(BUILD_DIR, 'out', args.project_name, 'cifuzz-crashes')
+    workspace_crashes = os.path.join(os.getenv('GITHUB_WORKSPACE'), 'crashes')
+    if os.path.isdir(workspace_crashes):
+      shutil.rmtree(workspace_crashes)
+    shutil.copytree(crashes, workspace_crashes)
+    return 1
+
+def smoketest(args):
+  """smoketests a fuzzer in the runner container."""
+  if not _check_project_exists(args.project_name):
+    return 1
+
+  env = [
+      'FUZZING_ENGINE=libfuzzer',
+      'SANITIZER=address'
+  ]
+
+  run_args = _env_to_docker_args(env) + [
+      '-v', '%s:/out' % _get_output_dir(args.project_name),
+      '-t', 'gcr.io/oss-fuzz-base/base-runner:testing',
+      'smoketest.py'
+  ]
+  return docker_run(run_args)
+
+def ci_build(args):
+  if not _build_image(args.project_name):
+    return 1
+  env = [
+      'FUZZING_ENGINE=libfuzzer',
+      'SANITIZER=address',
+      'ARCHITECTURE=x86_64',
+  ]
+  project_work_dir = _get_work_dir(args.project_name)
+  command = (
+      ['docker', 'run', '--rm', '--cap-add', 'SYS_PTRACE'] +
+      _env_to_docker_args(env))
+  gh_ref = os.getenv('GITHUB_REF')
+  command += [
+      '-v', '%s:/out' % _get_output_dir(args.project_name),
+      '-v', '%s:/work' % _get_work_dir(args.project_name),
+      '-t', 'gcr.io/oss-fuzz/%s' % args.project_name,
+      '/bin/bash', '-c',
+      ('git fetch --tags --prune --progress --no-recurse-submodules origin +refs/heads/*:refs/remotes/origin/* +{0}:{1} && '
+       'git checkout --progress --force {1} && '
+       'compile').format(gh_ref.replace('refs/remotes/', 'refs/'),  gh_ref.replace('refs/pull', 'refs/remotes/pull'))
+
+  ]
+  print('Running:', _get_command_string(command))
+  try:
+    subprocess.check_call(command)
+  except subprocess.CalledProcessError:
+    print('ci_build failed.', file=sys.stderr)
+    return 1
 
 
 def reproduce(args):
