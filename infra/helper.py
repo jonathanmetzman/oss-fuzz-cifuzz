@@ -742,8 +742,8 @@ def cifuzz(args):
   if smoketest(args):
     crashes = os.path.join(BUILD_DIR, 'out', args.project_name, 'cifuzz-crashes')
     workspace_crashes = os.path.join(os.getenv('GITHUB_WORKSPACE'), 'crashes')
-    print('shell')
-    os.system('/bin/bash')
+    print('debug')
+    import pdb; pdb.set_trace()
     if os.path.isdir(workspace_crashes):
       shutil.rmtree(workspace_crashes)
     shutil.copytree(crashes, workspace_crashes)
